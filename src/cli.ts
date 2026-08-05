@@ -29,14 +29,29 @@ program
     const newRawFiles: string[] = [];
 
     try {
+      // Find the page that is actually on the Slack client, or fall back to the first page/new page.
+      let page = context.pages().find(p => p.url().includes("/client/"));
+      if (!page) {
+        page = context.pages()[0] ?? (await context.newPage());
+      }
+
+      // If the page is not yet in the client view, navigate to the main client URL.
+      if (!page.url().includes("/client/")) {
+        console.log("[CLI] Navigating to Slack client view...");
+        await page.goto("https://app.slack.com/client/", { waitUntil: "domcontentloaded" });
+        await page.waitForURL("**/client/**", { timeout: 15000 });
+      }
+
       // Parse the Slack Team ID from active dashboard URL.
-      const initialPage = context.pages()[0] ?? (await context.newPage());
-      const teamIdMatch = initialPage.url().match(/\/client\/([^/]+)/);
+      const teamIdMatch = page.url().match(/\/client\/([^/]+)/);
       const teamId = teamIdMatch ? teamIdMatch[1] : "T00000000";
 
       for (const conversation of config.conversations) {
-        // Fresh isolated page per conversation prevents state bleed.
-        const page = await context.newPage();
+        if (conversation.name.toLowerCase() === "general") {
+          console.log(`[CLI] Skipping "general" channel as requested.`);
+          continue;
+        }
+        // Reuse the single authenticated page to maintain active sessionStorage/state and avoid SSO prompts.
         try {
           let channelId = conversation.id;
           let sinceTs: string | null = null;
@@ -66,8 +81,6 @@ program
           console.log(`Scraped ${messages.length} messages for ${conversation.name}`);
         } catch (err: any) {
           console.error(`[CLI] Error scraping "${conversation.name}": ${err.message}. Continuing to next conversation...`);
-        } finally {
-          await page.close();
         }
       }
 

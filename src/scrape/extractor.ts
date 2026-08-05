@@ -75,6 +75,11 @@ export async function scrapeChannelHistory(page: Page, options?: { sinceTs?: str
     console.warn("[Extractor] Warning: message list selector did not mount in time. Proceeding anyway...");
   });
 
+  // Wait for at least one message row to load in the list.
+  await page.waitForSelector(SELECTORS.messageRow, { state: "attached", timeout: 8000 }).catch(() => {
+    console.warn("[Extractor] Warning: no message rows loaded within 8s. Proceeding anyway...");
+  });
+
   // Diagnostic log of initial DOM state.
   const listExists = await page.evaluate((selectors) => {
     const list = document.querySelector(selectors.messageList);
@@ -201,18 +206,38 @@ export async function scrapeChannelHistory(page: Page, options?: { sinceTs?: str
 
     // Drain buffered messages from page context.
     console.log("[Extractor]   -> Draining browser message buffer...");
-    const drained: any[] = await page.evaluate(() => {
-      const arr = (window as any).__scrapedMessages ?? [];
+    const drained: any[] = await page.evaluate((selectors) => {
+      const visibleRows: any[] = [];
+      const list = document.querySelector(selectors.messageList);
+      if (list) {
+        const rows = Array.from(list.querySelectorAll(selectors.messageRow));
+        rows.forEach((row) => {
+          const parsed = (window as any).extractSingleRow(row, selectors);
+          if (parsed) {
+            visibleRows.push(parsed);
+          }
+        });
+      }
+
+      const buffered = (window as any).__scrapedMessages ?? [];
       (window as any).__scrapedMessages = [];
-      return arr;
-    });
+
+      // Merge and deduplicate by 'ts'
+      const mergedMap = new Map();
+      buffered.forEach((m: any) => mergedMap.set(m.ts, m));
+      visibleRows.forEach((m: any) => mergedMap.set(m.ts, m));
+
+      return Array.from(mergedMap.values());
+    }, SELECTORS);
     console.log(`[Extractor]   -> Drained ${drained.length} messages.`);
 
     let hitSyncPointer = false;
     for (const raw of drained) {
       if (since !== null && Number(raw.ts) <= since) {
-        console.log(`[Extractor] Encountered message older than or equal to sinceTs (${raw.ts} <= ${options?.sinceTs}). Stopping scroll.`);
-        hitSyncPointer = true;
+        if (!hitSyncPointer) {
+          console.log(`[Extractor] Encountered message older than or equal to sinceTs (${raw.ts} <= ${options?.sinceTs}). Stopping scroll.`);
+          hitSyncPointer = true;
+        }
         continue;
       }
 

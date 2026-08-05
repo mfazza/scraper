@@ -26,9 +26,16 @@ export async function getAuthenticatedContext(): Promise<BrowserContext> {
   // Probe existing session in headless mode
   let context = await chromium.launchPersistentContext(PROFILE_DIR, { headless: true });
   let page = context.pages()[0] ?? (await context.newPage());
-  await page.goto("https://app.slack.com/client/", { waitUntil: "domcontentloaded" });
+  
+  let loggedIn = false;
+  try {
+    await page.goto("https://app.slack.com/client/", { waitUntil: "domcontentloaded", timeout: 15000 });
+    loggedIn = await isLoggedIn(page, 5000);
+  } catch {
+    loggedIn = false;
+  }
 
-  if (await isLoggedIn(page)) {
+  if (loggedIn) {
     return context;
   }
 

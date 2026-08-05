@@ -36,6 +36,10 @@ describe("scrapeChannelHistory - Mocked Scroll & Extraction", () => {
   const evaluateMock = vi.fn().mockImplementation(async (fn, ...args) => {
     const fnStr = fn.toString();
 
+    if (fnStr.includes("visibleRows") || fnStr.includes("__scrapedMessages ?? []")) {
+      return getMockMessagesForDrain();
+    }
+
     if (fnStr.includes("foundList")) {
       return { foundList: true, foundRows: mockMessages.length, url: "https://app.slack.com/client/T1/C1" };
     }
@@ -50,10 +54,6 @@ describe("scrapeChannelHistory - Mocked Scroll & Extraction", () => {
 
     if (fnStr.includes("scrollBy")) {
       return undefined;
-    }
-
-    if (fnStr.includes("__scrapedMessages ?? []")) {
-      return getMockMessagesForDrain();
     }
 
     if (fnStr.includes("scrollTop")) {
