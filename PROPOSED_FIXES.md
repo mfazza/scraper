@@ -23,7 +23,7 @@ npm install --save-dev tsx
 
 ---
 
-## Issue 2: Quick Switcher Shortcut Failure (Timeout for User "William Chen")
+## Issue 2: Quick Switcher Shortcut Failure (Timeout for User "William Chen") [RESOLVED]
 
 ### 1. Root Cause
 * In `src/scrape/resolver/channel.ts`, when a user or channel is not visible in the sidebar, the script triggers the Slack Quick Switcher using `Meta+k` on macOS or `Control+k` on other platforms.
