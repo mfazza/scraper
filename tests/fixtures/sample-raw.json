@@ -1,0 +1,32 @@
+[
+  {
+    "schemaVersion": 1,
+    "ts": "1784030400.000100",
+    "threadId": "1784030400.000100",
+    "author": "Alice",
+    "text": "hello world from parent",
+    "permalink": "https://example.slack.com/archives/C1/p1784030400000100",
+    "edited": false,
+    "files": []
+  },
+  {
+    "schemaVersion": 1,
+    "ts": "1784116800.000100",
+    "threadId": "1784030400.000100",
+    "author": "Bob",
+    "text": "first reply",
+    "permalink": "https://example.slack.com/archives/C1/p1784116800000100",
+    "edited": false,
+    "files": []
+  },
+  {
+    "schemaVersion": 1,
+    "ts": "1784116900.000200",
+    "threadId": "1784030400.000100",
+    "author": "Charlie",
+    "text": "second reply with code:\n```\nconst x = 1;\n```",
+    "permalink": "https://example.slack.com/archives/C1/p1784116900000200",
+    "edited": true,
+    "files": []
+  }
+]

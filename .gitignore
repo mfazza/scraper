@@ -1,0 +1,6 @@
+.planning/
+.auth/
+node_modules/
+.raw/
+raw/
+conversations.json

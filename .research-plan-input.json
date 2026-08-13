@@ -1,0 +1,11 @@
+{
+  "ecosystem": "npm",
+  "config": { "exa_search": false, "brave_search": false, "firecrawl": false, "tavily_search": false },
+  "questions": [
+    { "text": "Best ESM Node loops for sequential async operations with Playwright (SCRAPE-01)", "kind": "web" },
+    { "text": "Optimal way in Node.js to scan a directory and read the maximum timestamp from daily JSON files (SCRAPE-03)", "kind": "web" },
+    { "text": "Implementing early-exit in Playwright scroll loop based on message timestamp <= sinceTs (SCRAPE-03)", "kind": "web" },
+    { "text": "Best practices for Commander.js v15 boolean and incremental flags", "kind": "web" },
+    { "text": "Algorithm for safely merging and deduplicating JSON message arrays in Node.js", "kind": "web" }
+  ]
+}

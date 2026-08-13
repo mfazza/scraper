@@ -1,0 +1,18 @@
+{
+  "conversations": [
+    {
+      "type": "channel",
+      "name": "general",
+      "id": "C0123456789"
+    },
+    {
+      "type": "channel",
+      "name": "random"
+    },
+    {
+      "type": "dm",
+      "name": "Jane Doe",
+      "id": "D0123456789"
+    }
+  ]
+}
