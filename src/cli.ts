@@ -6,9 +6,26 @@ import { scrapeChannelHistory } from "./scrape/extractor.ts";
 import { writeRawMessages } from "./scrape/raw-writer.ts";
 import { getLatestSyncPointer } from "./scrape/resolver/sync.ts";
 import { SessionExpiredError } from "./auth/probe.ts";
+import { withRetry } from "./scrape/retry.ts";
+import { writeFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { execa } from "execa";
 
 const program = new Command();
+
+async function mapConcurrent<T, R>(items: T[], concurrency: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const currentIndex = index++;
+      results[currentIndex] = await fn(items[currentIndex]);
+    }
+  }
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
 
 program
   .name("slack-archiver")
@@ -18,6 +35,7 @@ program
   .option("--no-incremental", "disable incremental sync and force a full scrape")
   .option("-f, --full", "force full history scrape (alias for --no-incremental)")
   .action(async (opts) => {
+    const startTime = new Date().toISOString();
     const config = await loadConfig(opts.config);
     console.log(`Loaded ${config.conversations.length} conversation(s) from ${opts.config}`);
 
@@ -27,31 +45,34 @@ program
     console.log("Authenticated session ready.");
 
     const newRawFiles: string[] = [];
+    const runResults: { name: string; slug: string; messagesCount: number; status: 'success' | 'skipped' | 'failed'; error?: string }[] = [];
 
     try {
-      // Find the page that is actually on the Slack client, or fall back to the first page/new page.
       let page = context.pages().find(p => p.url().includes("/client/"));
       if (!page) {
         page = context.pages()[0] ?? (await context.newPage());
       }
 
-      // If the page is not yet in the client view, navigate to the main client URL.
       if (!page.url().includes("/client/")) {
         console.log("[CLI] Navigating to Slack client view...");
-        await page.goto("https://app.slack.com/client/", { waitUntil: "domcontentloaded" });
-        await page.waitForURL("**/client/**", { timeout: 15000 });
+        await withRetry(async () => {
+          await page!.goto("https://app.slack.com/client/", { waitUntil: "domcontentloaded" });
+          await page!.waitForURL("**/client/**", { timeout: 15000 });
+        });
       }
 
-      // Parse the Slack Team ID from active dashboard URL.
       const teamIdMatch = page.url().match(/\/client\/([^/]+)/);
       const teamId = teamIdMatch ? teamIdMatch[1] : "T00000000";
 
-      for (const conversation of config.conversations) {
+      // Process conversations concurrently with a max concurrency limit of 3
+      await mapConcurrent(config.conversations, 3, async (conversation) => {
         if (conversation.name.toLowerCase() === "general") {
           console.log(`[CLI] Skipping "general" channel as requested.`);
-          continue;
+          runResults.push({ name: conversation.name, slug: conversation.slug, messagesCount: 0, status: 'skipped' });
+          return;
         }
-        // Reuse the single authenticated page to maintain active sessionStorage/state and avoid SSO prompts.
+
+        const workerPage = await context.newPage();
         try {
           let channelId = conversation.id;
           let sinceTs: string | null = null;
@@ -63,26 +84,34 @@ program
             console.log(`[CLI] Full history scrape for "${conversation.name}"`);
           }
 
-          if (channelId) {
-            console.log(`Using pre-configured ID ${channelId} for "${conversation.name}"`);
-            await page.goto(`https://app.slack.com/client/${teamId}/${channelId}`, { waitUntil: "domcontentloaded" });
-            await page.waitForURL("**/client/**", { timeout: 15000 });
-          } else {
-            channelId = await navigateToChannel(page, conversation.name);
-          }
-          
+          await withRetry(async () => {
+            if (channelId) {
+              console.log(`Using pre-configured ID ${channelId} for "${conversation.name}"`);
+              await workerPage.goto(`https://app.slack.com/client/${teamId}/${channelId}`, { waitUntil: "domcontentloaded" });
+              await workerPage.waitForURL("**/client/**", { timeout: 15000 });
+            } else {
+              channelId = await navigateToChannel(workerPage, conversation.name);
+            }
+          });
+
           console.log(`Resolved channel "${conversation.name}" to ID ${channelId}`);
 
-          const messages = await scrapeChannelHistory(page, { sinceTs });
+          const messages = await withRetry(async () => {
+            return await scrapeChannelHistory(workerPage, { sinceTs });
+          });
 
           const written = await writeRawMessages(conversation.slug, messages);
           newRawFiles.push(...written);
 
           console.log(`Scraped ${messages.length} messages for ${conversation.name}`);
+          runResults.push({ name: conversation.name, slug: conversation.slug, messagesCount: messages.length, status: 'success' });
         } catch (err: any) {
-          console.error(`[CLI] Error scraping "${conversation.name}": ${err.message}. Continuing to next conversation...`);
+          console.error(`[CLI] Error scraping "${conversation.name}": ${err.message}. Continuing...`);
+          runResults.push({ name: conversation.name, slug: conversation.slug, messagesCount: 0, status: 'failed', error: err.message });
+        } finally {
+          await workerPage.close().catch(() => {});
         }
-      }
+      });
 
       // Trigger downstream clean stage on success.
       if (newRawFiles.length > 0) {
@@ -96,11 +125,24 @@ program
       await context.close();
     }
 
-    // Diagnostic tracking.
+    // Generate structured run summary telemetry report
+    const endTime = new Date().toISOString();
+    const summary = {
+      startTime,
+      endTime,
+      totalConversations: config.conversations.length,
+      successCount: runResults.filter(r => r.status === 'success').length,
+      failureCount: runResults.filter(r => r.status === 'failed').length,
+      conversations: runResults
+    };
+
+    await mkdir(path.join(process.cwd(), ".planning"), { recursive: true });
+    await writeFile(path.join(process.cwd(), ".planning", "run-summary.json"), JSON.stringify(summary, null, 2), "utf-8");
+    console.log("[CLI] Run summary telemetry report generated at .planning/run-summary.json");
+
     (globalThis as any).__newRawFiles = newRawFiles;
   });
 
-// Exit cleanly on session expiration.
 program.parseAsync().catch((err) => {
   if (err instanceof SessionExpiredError) {
     console.error(err.message);
