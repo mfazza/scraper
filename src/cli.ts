@@ -7,6 +7,7 @@ import { writeRawMessages } from "./scrape/raw-writer.ts";
 import { getLatestSyncPointer } from "./scrape/resolver/sync.ts";
 import { SessionExpiredError } from "./auth/probe.ts";
 import { withRetry } from "./scrape/retry.ts";
+import { status } from "./utils/status.ts";
 import { writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { execa } from "execa";
@@ -36,13 +37,14 @@ program
   .option("-f, --full", "force full history scrape (alias for --no-incremental)")
   .action(async (opts) => {
     const startTime = new Date().toISOString();
+    status.start(`Initializing configuration from ${opts.config}...`);
     const config = await loadConfig(opts.config);
-    console.log(`Loaded ${config.conversations.length} conversation(s) from ${opts.config}`);
+    status.update(`Loaded ${config.conversations.length} conversation(s). Establishing browser session...`);
 
     const useIncremental = opts.incremental !== false && opts.full !== true;
 
     const context = await getAuthenticatedContext();
-    console.log("Authenticated session ready.");
+    status.stop("Authenticated session ready.");
 
     const newRawFiles: string[] = [];
     const runResults: { name: string; slug: string; messagesCount: number; status: 'success' | 'skipped' | 'failed'; error?: string }[] = [];
@@ -54,20 +56,22 @@ program
       }
 
       if (!page.url().includes("/client/")) {
-        console.log("[CLI] Navigating to Slack client view...");
+        status.start("Navigating to Slack client view...");
         await withRetry(async () => {
           await page!.goto("https://app.slack.com/client/", { waitUntil: "domcontentloaded" });
           await page!.waitForURL("**/client/**", { timeout: 15000 });
         });
+        status.stop("Reached Slack client view.");
       }
 
       const teamIdMatch = page.url().match(/\/client\/([^/]+)/);
       const teamId = teamIdMatch ? teamIdMatch[1] : "T00000000";
 
+      status.start(`[Orchestrator] Scraping conversations (concurrency: 3)...`);
+
       // Process conversations concurrently with a max concurrency limit of 3
       await mapConcurrent(config.conversations, 3, async (conversation) => {
         if (conversation.name.toLowerCase() === "general") {
-          console.log(`[CLI] Skipping "general" channel as requested.`);
           runResults.push({ name: conversation.name, slug: conversation.slug, messagesCount: 0, status: 'skipped' });
           return;
         }
@@ -79,22 +83,18 @@ program
 
           if (useIncremental) {
             sinceTs = await getLatestSyncPointer(conversation.slug);
-            console.log(`[CLI] Incremental sync pointer for "${conversation.name}" is ${sinceTs}`);
-          } else {
-            console.log(`[CLI] Full history scrape for "${conversation.name}"`);
           }
+
+          status.update(`Scraping [${conversation.name}]...`);
 
           await withRetry(async () => {
             if (channelId) {
-              console.log(`Using pre-configured ID ${channelId} for "${conversation.name}"`);
               await workerPage.goto(`https://app.slack.com/client/${teamId}/${channelId}`, { waitUntil: "domcontentloaded" });
               await workerPage.waitForURL("**/client/**", { timeout: 15000 });
             } else {
               channelId = await navigateToChannel(workerPage, conversation.name);
             }
           });
-
-          console.log(`Resolved channel "${conversation.name}" to ID ${channelId}`);
 
           const messages = await withRetry(async () => {
             return await scrapeChannelHistory(workerPage, { sinceTs });
@@ -103,21 +103,21 @@ program
           const written = await writeRawMessages(conversation.slug, messages);
           newRawFiles.push(...written);
 
-          console.log(`Scraped ${messages.length} messages for ${conversation.name}`);
           runResults.push({ name: conversation.name, slug: conversation.slug, messagesCount: messages.length, status: 'success' });
         } catch (err: any) {
-          console.error(`[CLI] Error scraping "${conversation.name}": ${err.message}. Continuing...`);
           runResults.push({ name: conversation.name, slug: conversation.slug, messagesCount: 0, status: 'failed', error: err.message });
         } finally {
           await workerPage.close().catch(() => {});
         }
       });
 
+      status.stop("All conversation scraping tasks completed.");
+
       // Trigger downstream clean stage on success.
       if (newRawFiles.length > 0) {
-        console.log("Starting clean stage...");
+        status.start("[Orchestrator] Running clean stage: nesting threads, grouping by day, and rendering markdown...");
         await execa("bash", ["scripts/clean.sh", ...config.conversations.map(c => c.slug)]);
-        console.log("Cleaning complete.");
+        status.stop("Cleaning and markdown generation complete.");
       } else {
         console.log("No new raw data — skipping clean stage.");
       }
